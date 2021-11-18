@@ -1,3 +1,3 @@
-module syncwaitgroup
+module syncwg
 
 go 1.17

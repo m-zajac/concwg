@@ -1,5 +1,5 @@
 //nolint:gosec // We're using plain random for simplicity.
-package main
+package syncwg
 
 import (
 	"fmt"
@@ -68,8 +68,7 @@ func Test_concurrentWaiter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			w := newConcurrentWaiter()
-			w.allowNegative = true
+			w := New()
 
 			for i, op := range tt.ops {
 				t.Run(fmt.Sprintf("op-%d", i+1), func(t *testing.T) {
@@ -117,7 +116,7 @@ func Test_concurrentWaiter(t *testing.T) {
 }
 
 // waiterWait spins 10 goroutines that `Wait`, and returns a chan that is closed, when all waits return.
-func waiterWait(w *concurrentWaiter) <-chan struct{} {
+func waiterWait(w *WaitGroup) <-chan struct{} {
 	var chs []chan struct{}
 	for i := 0; i < 10; i++ {
 		ch := make(chan struct{})
