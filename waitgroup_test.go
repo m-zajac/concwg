@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/m-zajac/concwg"
+	"github.com/stretchr/testify/assert"
 )
 
 //nolint:funlen // Long test.
@@ -16,10 +17,9 @@ func TestWaiter(t *testing.T) {
 	t.Parallel()
 
 	type op struct {
-		numAdds     int
-		numDones    int
-		shouldWait  bool
-		shouldPanic bool
+		numAdds    int
+		numDones   int
+		shouldWait bool
 	}
 
 	tests := map[string]struct {
@@ -28,40 +28,27 @@ func TestWaiter(t *testing.T) {
 		"0/0": {
 			ops: []op{
 				{
-					numAdds:     0,
-					numDones:    0,
-					shouldWait:  false,
-					shouldPanic: false,
+					numAdds:    0,
+					numDones:   0,
+					shouldWait: false,
 				},
 			},
 		},
 		"1/0": {
 			ops: []op{
 				{
-					numAdds:     1,
-					numDones:    0,
-					shouldWait:  true,
-					shouldPanic: false,
+					numAdds:    1,
+					numDones:   0,
+					shouldWait: true,
 				},
 			},
 		},
 		"50/50": {
 			ops: []op{
 				{
-					numAdds:     50,
-					numDones:    50,
-					shouldWait:  false,
-					shouldPanic: false,
-				},
-			},
-		},
-		"51/50": {
-			ops: []op{
-				{
-					numAdds:     51,
-					numDones:    50,
-					shouldWait:  true,
-					shouldPanic: true,
+					numAdds:    50,
+					numDones:   50,
+					shouldWait: false,
 				},
 			},
 		},
@@ -73,15 +60,16 @@ func TestWaiter(t *testing.T) {
 			wg := concwg.New()
 
 			for i, op := range tt.ops {
+				op := op
 				t.Run(fmt.Sprintf("op-%d", i+1), func(t *testing.T) {
-					panics := make(chan struct{}, 1)
 					var swg sync.WaitGroup
+					adds := make(chan struct{}, op.numAdds)
 					for i := 0; i < op.numAdds; i++ {
 						swg.Add(1)
 						go func() {
 							defer func() {
 								if err := recover(); err != nil {
-									panics <- struct{}{}
+									panic(fmt.Errorf("op: %#v, err: %v", op, err))
 								}
 							}()
 							defer swg.Done()
@@ -89,7 +77,10 @@ func TestWaiter(t *testing.T) {
 							d := float64(time.Millisecond*100) * rand.Float64()
 							time.Sleep(time.Duration(d))
 
-							wg.Add(1)
+							if ok := wg.Add(1); !ok {
+								panic("wg.Add returned false")
+							}
+							adds <- struct{}{}
 						}()
 					}
 					for i := 0; i < op.numDones; i++ {
@@ -97,7 +88,7 @@ func TestWaiter(t *testing.T) {
 						go func() {
 							defer func() {
 								if err := recover(); err != nil {
-									panics <- struct{}{}
+									panic(fmt.Errorf("op: %#v, err: %v", op, err))
 								}
 							}()
 							defer swg.Done()
@@ -105,18 +96,20 @@ func TestWaiter(t *testing.T) {
 							d := float64(time.Millisecond*100) * rand.Float64()
 							time.Sleep(time.Duration(d))
 
+							<-adds
 							wg.Done()
 						}()
 					}
 					swg.Wait()
 
+					// After finishing waitgroup, it should not accept any more jobs.
+					wg.Finish()
+					ok := wg.Add(1)
+					assert.False(t, ok)
+
 					done := waiterWait(wg)
 
 					select {
-					case <-panics:
-						if !op.shouldPanic {
-							t.Error("unexpected panic")
-						}
 					case <-done:
 						if op.shouldWait {
 							t.Error("waiter should wait, but didn't")
@@ -135,6 +128,7 @@ func TestWaiter(t *testing.T) {
 func TestWaiterTorture(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		jobs := rand.Intn(1000)
+		adds := make(chan struct{}, jobs)
 		dones := make(chan struct{}, jobs)
 		concurrentWaits := make(chan struct{}, jobs)
 
@@ -142,7 +136,11 @@ func TestWaiterTorture(t *testing.T) {
 		for j := 0; j < jobs; j++ {
 			added := make(chan struct{})
 			go func() {
-				wg.Add(1)
+				ok := wg.Add(1)
+				if !ok {
+					panic("wg.Add returned false")
+				}
+				adds <- struct{}{}
 				close(added)
 			}()
 			go func() {
@@ -156,6 +154,20 @@ func TestWaiterTorture(t *testing.T) {
 				concurrentWaits <- struct{}{}
 			}()
 		}
+
+		// After all the jobs are added mark wg as finished.
+		for j := 0; j < jobs; j++ {
+			<-adds
+		}
+		wg.Finish()
+		for i := 0; i < 10; i++ {
+			go func() {
+				if ok := wg.Add(1); ok {
+					panic("wg.Add returned true after finishing")
+				}
+			}()
+		}
+
 		<-waiterWait(wg)
 
 		for j := 0; j < jobs; j++ {

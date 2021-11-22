@@ -1,8 +1,9 @@
 package concwg
 
 type state struct {
-	counter int
-	waiters []chan struct{}
+	counter  int
+	finished bool
+	waiters  []chan struct{}
 }
 
 func (s *state) notifyWaiters() {
@@ -44,17 +45,24 @@ func New() *WaitGroup {
 // If the counter becomes zero, all goroutines blocked on Wait are released.
 // If the counter goes negative, Add panics.
 //
+// Add returns true if the counter was incremented and it is safe to perform the job.
+// If it returns true, it means that the group was marked as "finished" and won't accept any more jobs.
+//
 // Note that calls with a positive delta that occur when the counter is zero
 // must happen before a Wait. Calls with a negative delta, or calls with a
 // positive delta that start when the counter is greater than zero, may happen
 // at any time.
 // Typically this means the calls to Add should execute before the statement
 // creating the job or other event to be waited for.
-// If a WaitGroup is reused to wait for several independent sets of events,
-// new Add calls must happen after all previous Wait calls have returned.
-func (w *WaitGroup) Add(n int) {
+//
+// WaitGroup is not designed to be reused. After call to Finish it will never accept any new jobs.
+func (w *WaitGroup) Add(n int) bool {
 	s := <-w.s
 	defer func() { w.s <- s }()
+
+	if s.finished {
+		return false
+	}
 
 	s.counter += n
 	if s.counter < 0 {
@@ -62,6 +70,8 @@ func (w *WaitGroup) Add(n int) {
 	}
 
 	s.notifyWaiters()
+
+	return true
 }
 
 // Done decrements the WaitGroup counter by one.
@@ -75,6 +85,15 @@ func (w *WaitGroup) Done() {
 	}
 
 	s.notifyWaiters()
+}
+
+// Finish marks the group as "finished".
+// Subsequent calls to Add will always return false.
+func (w *WaitGroup) Finish() {
+	s := <-w.s
+	defer func() { w.s <- s }()
+
+	s.finished = true
 }
 
 // Wait blocks until the WaitGroup counter is zero.

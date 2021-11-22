@@ -24,7 +24,20 @@ It is critical that `Add` and `Wait` are in the same goroutine. This is not well
  - [The golang issue](https://github.com/golang/go/issues/23842)
  - [The source code](https://cs.opensource.google/go/go/+/refs/tags/go1.16.7:src/sync/waitgroup.go;l=88)
 
-The `concwg.WaitGroup` works as the standard version, but it is safe to use in different scenarios, like in this example:
+The `concwg.WaitGroup` works very similar to the standard version, but it is safe to use in different scenarios.
+## Usage
+
+This version required one, crucial change to the interface vs the standard `WaitGroup`.
+
+Since `Add` and `Wait` methods could be all called asynchronously, there is no way to guarantee that `Add` won't be called accidentally after the `Wait`.
+So in some cases you must have a way to know if it is still safe to schedule a job after the call to `Add`.
+
+That's why:
+- You can call `Finish` if you want to be sure that no new jobs will be accepted before calling `Wait`.
+- After `Finish` is called, `Add` always returns false. In this case you can't schedule a job and be sure that synchronous `Wait` will wait for it to finish.
+
+Example:
+
 
 ```go
 wg := concwg.New()
@@ -32,7 +45,12 @@ wg := concwg.New()
 handler := func(w http.ResponseWriter, _ *http.Request) {
     // There's some job to be done for this request.
     // Note that each request is handled in a separate goroutine.
-    wg.Add(1) 
+    ok := wg.Add(1)
+    if !ok {
+        // This means the group was "finished" and it is not safe to accept more jobs.
+        w.WriteHeader(StatusServiceUnavailable)
+        return
+    }
 
     w.WriteHeader(http.StatusAccepted)
     go func() {
@@ -49,6 +67,9 @@ srv := httptest.NewServer(http.HandlerFunc(handler))
 
 // Close the server
 srv.Close()
+
+// Finish the group to prevent accepting new jobs before we start to wait.
+wg.Finish()
 
 // Wait for all the jobs to complete.
 // It is safe to call it here.
