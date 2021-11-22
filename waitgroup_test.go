@@ -140,21 +140,23 @@ func TestWaiterTorture(t *testing.T) {
 
 		wg := concwg.New()
 		for j := 0; j < jobs; j++ {
+			added := make(chan struct{})
 			go func() {
 				wg.Add(1)
-
-				go func() {
-					time.Sleep(time.Duration(rand.Intn(100000))) // Up to 0.1 millisecond.
-					wg.Done()
-					dones <- struct{}{}
-				}()
+				close(added)
 			}()
 			go func() {
-				<-waiterWait(wg)
+				<-added
+				time.Sleep(time.Duration(rand.Intn(100000))) // Up to 0.1 millisecond.
+				wg.Done()
+				dones <- struct{}{}
+			}()
+			go func() {
+				wg.Wait()
 				concurrentWaits <- struct{}{}
 			}()
 		}
-		wg.Wait()
+		<-waiterWait(wg)
 
 		for j := 0; j < jobs; j++ {
 			select {
