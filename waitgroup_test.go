@@ -133,8 +133,8 @@ func TestWaiter(t *testing.T) {
 }
 
 func TestWaiterTorture(t *testing.T) {
-	for i := 0; i < 10; i++ {
-		jobs := rand.Intn(10000)
+	for i := 0; i < 100; i++ {
+		jobs := rand.Intn(1000)
 		dones := make(chan struct{}, jobs)
 		concurrentWaits := make(chan struct{}, jobs)
 
@@ -144,7 +144,7 @@ func TestWaiterTorture(t *testing.T) {
 				wg.Add(1)
 
 				go func() {
-					time.Sleep(time.Duration(rand.Intn(1000000))) // Up to 1 millisecond.
+					time.Sleep(time.Duration(rand.Intn(100000))) // Up to 0.1 millisecond.
 					wg.Done()
 					dones <- struct{}{}
 				}()
