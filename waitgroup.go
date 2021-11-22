@@ -1,8 +1,20 @@
-package syncwg
+package concwg
 
-import (
-	"sync"
-)
+type state struct {
+	counter int
+	waiters []chan struct{}
+}
+
+func (s *state) notifyWaiters() {
+	if s.counter != 0 {
+		return
+	}
+
+	for _, c := range s.waiters {
+		close(c)
+	}
+	s.waiters = nil
+}
 
 // WaitGroup works similarly to sync.WaitGroup, but allows to use `Add` and `Wait` concurrently.
 //
@@ -12,26 +24,19 @@ import (
 //
 //
 // A WaitGroup waits for a collection of jobs to finish.
-// Every time there is a "job" to do, Add is called to set the number of
-// jobs to wait for. Add will return true if the job is allowed, or false otherwise.
+// Every time there is a "job" to do, Add is called to set the number of jobs to wait for.
 // Then each of the jobs runs and calls Done when finished. At the same time,
 // Wait can be used to block until all jobs have finished.
-// The WaitGroup can be marked as "finished" by calling Finish.
-// After the group is finished, no more jobs are accepted. Subsequent calls to Add will return false.
 type WaitGroup struct {
-	counter int
-	done    bool
-
-	// condZero has 2 functions here:
-	// - it is a mutex for the state variable,
-	// - it is a condition for `state == 0`, that allows waking up waiting goroutines.
-	condZero *sync.Cond
+	s chan *state
 }
 
 // New creates a new WaitGroup.
 func New() *WaitGroup {
+	s := make(chan *state, 1)
+	s <- &state{}
 	return &WaitGroup{
-		condZero: sync.NewCond(new(sync.Mutex)),
+		s: s,
 	}
 }
 
@@ -47,54 +52,42 @@ func New() *WaitGroup {
 // creating the job or other event to be waited for.
 // If a WaitGroup is reused to wait for several independent sets of events,
 // new Add calls must happen after all previous Wait calls have returned.
-func (w *WaitGroup) Add(n int) bool {
-	w.condZero.L.Lock()
-	defer w.condZero.L.Unlock()
+func (w *WaitGroup) Add(n int) {
+	s := <-w.s
+	defer func() { w.s <- s }()
 
-	if w.done {
-		// Not allowed to add any more work.
-		return false
+	s.counter += n
+	if s.counter < 0 {
+		panic("concwg: negative WaitGroup counter")
 	}
 
-	w.counter += n
-	if w.counter < 0 {
-		panic("syncwg: negative WaitGroup counter")
-	}
-	if w.counter == 0 {
-		w.condZero.Broadcast()
-	}
-	return true
+	s.notifyWaiters()
 }
 
 // Done decrements the WaitGroup counter by one.
 func (w *WaitGroup) Done() {
-	w.condZero.L.Lock()
-	defer w.condZero.L.Unlock()
+	s := <-w.s
+	defer func() { w.s <- s }()
 
-	w.counter--
-	if w.counter < 0 {
-		panic("syncwg: negative WaitGroup counter")
+	s.counter--
+	if s.counter < 0 {
+		panic("concwg: negative WaitGroup counter")
 	}
-	if w.counter == 0 {
-		w.condZero.Broadcast()
-	}
+
+	s.notifyWaiters()
 }
 
 // Wait blocks until the WaitGroup counter is zero.
 func (w *WaitGroup) Wait() {
-	w.condZero.L.Lock()
-	defer w.condZero.L.Unlock()
-
-	for w.counter != 0 {
-		w.condZero.Wait()
+	s := <-w.s
+	if s.counter == 0 {
+		w.s <- s
+		return
 	}
-}
 
-// Finish makes group not accepting any more work.
-// Subsequent calls to Add() will return false.
-func (w *WaitGroup) Finish() {
-	w.condZero.L.Lock()
-	defer w.condZero.L.Unlock()
+	wait := make(chan struct{})
+	s.waiters = append(s.waiters, wait)
+	w.s <- s
 
-	w.done = true
+	<-wait
 }

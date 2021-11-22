@@ -1,35 +1,36 @@
-package syncwg_test
+package concwg_test
 
 import (
 	"net/http"
-	"syncwg"
+	"net/http/httptest"
+
+	"github.com/m-zajac/concwg"
 )
 
-// This example fetches several URLs concurrently,
-// using a WaitGroup to block until all the fetches are complete.
+// This example shows the simple use case of the concwg.WaitGroup
 func ExampleWaitGroup() {
-	wg := syncwg.New()
-	fetchURLs := func() {
-		var urls = []string{
-			"http://www.golang.org/",
-			"http://www.google.com/",
-			"http://www.somestupidname.com/",
-		}
-		for _, url := range urls {
-			// Increment the WaitGroup counter.
-			wg.Add(1)
-			// Launch a goroutine to fetch the URL.
-			go func(url string) {
-				// Decrement the counter when the goroutine completes.
-				defer wg.Done()
-				// Fetch the URL.
-				http.Get(url)
-			}(url)
-		}
+	wg := concwg.New()
+
+	handler := func(w http.ResponseWriter, _ *http.Request) {
+		wg.Add(1) // There's some job to be done for this request.
+
+		w.WriteHeader(http.StatusAccepted)
+		go func() {
+			// Do a background job...
+			defer wg.Done()
+		}()
 	}
 
-	fetchURLs()
+	// Start a server.
+	srv := httptest.NewServer(http.HandlerFunc(handler))
 
-	// Wait for all HTTP fetches to complete.
+	// Handler some requests.
+	// ...
+
+	// Close the server
+	srv.Close()
+
+	// Wait for all the jobs to complete.
+	// It is safe to call it here, even if adds were called in different goroutines.
 	wg.Wait()
 }
