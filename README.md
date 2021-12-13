@@ -24,54 +24,82 @@ It is critical that `Add` and `Wait` are in the same goroutine. This is not well
  - [The golang issue](https://github.com/golang/go/issues/23842)
  - [The source code](https://cs.opensource.google/go/go/+/refs/tags/go1.16.7:src/sync/waitgroup.go;l=88)
 
-The `concwg.WaitGroup` works very similar to the standard version, but it is safe to use in different scenarios.
-## Usage
+The `concwg.WaitGroup` works similarly to the standard version, but has one, crucial change to the interface: **`Add` returns a bool value**.
 
-This version required one, crucial change to the interface vs the standard `WaitGroup`.
-
-Since `Add` and `Wait` methods could be all called asynchronously, there is no way to guarantee that `Add` won't be called accidentally after the `Wait`.
+Since `Add` and `Wait` methods could be called asynchronously, there is no way to guarantee that `Add` won't be called accidentally after the `Wait`.
 So in some cases you must have a way to know if it is still safe to schedule a job after the call to `Add`.
 
-That's why:
-- You can call `Finish` if you want to be sure that no new jobs will be accepted before calling `Wait`.
-- After `Finish` is called, `Add` always returns false. In this case you can't schedule a job and be sure that synchronous `Wait` will wait for it to finish.
+That's why after `Wait` is called, `Add` always returns false. In this case you can't schedule a job and be sure that `Wait` will wait for it to finish.
 
-Example:
+## Usage
+
+Example use case:
 
 
 ```go
-wg := concwg.New()
 
-handler := func(w http.ResponseWriter, _ *http.Request) {
-    // There's some job to be done for this request.
-    // Note that each request is handled in a separate goroutine.
-    ok := wg.Add(1)
-    if !ok {
-        // This means the group was "finished" and it is not safe to accept more jobs.
-        w.WriteHeader(StatusServiceUnavailable)
-        return
-    }
-
-    w.WriteHeader(http.StatusAccepted)
-    go func() {
-        // Do a background job...
-        defer wg.Done()
-    }()
+type myWorker struct {
+	wg *concwg.WaitGroup
 }
 
-// Start a server.
-srv := httptest.NewServer(http.HandlerFunc(handler))
+func newWorker() *myWorker {
+	return &myWorker{
+		wg: concwg.New(),
+	}
+}
 
-// Handler some requests.
-// ...
+func (s *myWorker) HandleTask(name string) error {
+	if ok := s.wg.Add(1); !ok {
+		return errors.New("server is closing")
+	}
+	defer s.wg.Done()
 
-// Close the server
-srv.Close()
+	// Simulate doing some work.
+	time.Sleep(time.Second)
+	fmt.Printf("task '%s' done", name)
 
-// Finish the group to prevent accepting new jobs before we start to wait.
-wg.Finish()
+	return nil
+}
 
-// Wait for all the jobs to complete.
-// It is safe to call it here.
-wg.Wait()
+func (s *myWorker) Stop() {
+	s.wg.Wait()
+}
+
+// This example shows the simple use case of the concwg.WaitGroup
+func ExampleWaitGroup() {
+	worker := newWorker()
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		err := worker.HandleTask(r.URL.Path)
+		if err != nil {
+			log.Printf("calling worer: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusAccepted)
+	}
+
+	// Start a server.
+	srv := httptest.NewServer(http.HandlerFunc(handler))
+
+	// Handle a request.
+	resp, err := http.DefaultClient.Get(srv.URL + "/foo")
+	if err != nil {
+		panic(err)
+	}
+	if resp.StatusCode != http.StatusAccepted {
+		panic("unexpected status code")
+	}
+
+	// Close the server
+	srv.Close()
+
+	// Stop the worker, wait for all tasks to be finished.
+	worker.Stop()
+
+	// You can safely exit the program now.
+
+	// Output:
+	// task '/foo' done
+}
 ```

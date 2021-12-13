@@ -62,17 +62,17 @@ func TestWaiter(t *testing.T) {
 			for i, op := range tt.ops {
 				op := op
 				t.Run(fmt.Sprintf("op-%d", i+1), func(t *testing.T) {
-					var swg sync.WaitGroup
+					var helperWaitGroup sync.WaitGroup
 					adds := make(chan struct{}, op.numAdds)
 					for i := 0; i < op.numAdds; i++ {
-						swg.Add(1)
+						helperWaitGroup.Add(1)
 						go func() {
 							defer func() {
 								if err := recover(); err != nil {
 									panic(fmt.Errorf("op: %#v, err: %v", op, err))
 								}
 							}()
-							defer swg.Done()
+							defer helperWaitGroup.Done()
 
 							d := float64(time.Millisecond*100) * rand.Float64()
 							time.Sleep(time.Duration(d))
@@ -84,14 +84,14 @@ func TestWaiter(t *testing.T) {
 						}()
 					}
 					for i := 0; i < op.numDones; i++ {
-						swg.Add(1)
+						helperWaitGroup.Add(1)
 						go func() {
 							defer func() {
 								if err := recover(); err != nil {
 									panic(fmt.Errorf("op: %#v, err: %v", op, err))
 								}
 							}()
-							defer swg.Done()
+							defer helperWaitGroup.Done()
 
 							d := float64(time.Millisecond*100) * rand.Float64()
 							time.Sleep(time.Duration(d))
@@ -100,20 +100,18 @@ func TestWaiter(t *testing.T) {
 							wg.Done()
 						}()
 					}
-					swg.Wait()
-
-					// After finishing waitgroup, it should not accept any more jobs.
-					wg.Finish()
-					ok := wg.Add(1)
-					assert.False(t, ok)
+					helperWaitGroup.Wait()
 
 					done := waiterWait(wg)
-
 					select {
 					case <-done:
 						if op.shouldWait {
 							t.Error("waiter should wait, but didn't")
 						}
+
+						// After calling wait waitgroup should not accept any more jobs.
+						ok := wg.Add(1)
+						assert.False(t, ok)
 					case <-time.After(time.Second):
 						if !op.shouldWait {
 							t.Error("waiter shouldn't wait, but did")
@@ -130,7 +128,6 @@ func TestWaiterTorture(t *testing.T) {
 		jobs := rand.Intn(1000)
 		adds := make(chan struct{}, jobs)
 		dones := make(chan struct{}, jobs)
-		concurrentWaits := make(chan struct{}, jobs)
 
 		wg := concwg.New()
 		for j := 0; j < jobs; j++ {
@@ -149,39 +146,43 @@ func TestWaiterTorture(t *testing.T) {
 				wg.Done()
 				dones <- struct{}{}
 			}()
-			go func() {
-				wg.Wait()
-				concurrentWaits <- struct{}{}
-			}()
 		}
 
-		// After all the jobs are added mark wg as finished.
+		// Wait for all Add calls to complete.
 		for j := 0; j < jobs; j++ {
-			<-adds
-		}
-		wg.Finish()
-		for i := 0; i < 10; i++ {
-			go func() {
-				if ok := wg.Add(1); ok {
-					panic("wg.Add returned true after finishing")
-				}
-			}()
+			select {
+			case <-adds:
+			case <-time.After(100 * time.Millisecond):
+				t.Fatalf("timeout")
+			}
 		}
 
-		<-waiterWait(wg)
+		// Span multiple Waits concurrently and wait for them.
+		select {
+		case <-waiterWait(wg):
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("timeout")
+		}
 
+		// After wait was called `Add` should not accept any jobs.
+		if ok := wg.Add(1); ok {
+			panic("wg.Add returned true after finishing")
+		}
+
+		// Enure all jobs were done.
 		for j := 0; j < jobs; j++ {
 			select {
 			case <-dones:
 			case <-time.After(100 * time.Millisecond):
 				t.Fatalf("timeout")
 			}
+		}
 
-			select {
-			case <-concurrentWaits:
-			case <-time.After(100 * time.Millisecond):
-				t.Fatalf("timeout")
-			}
+		// Span multiple Waits concurrently and wait for them (again).
+		select {
+		case <-waiterWait(wg):
+		case <-time.After(1 * time.Millisecond):
+			t.Fatalf("timeout")
 		}
 	}
 }

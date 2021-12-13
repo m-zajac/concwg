@@ -87,18 +87,12 @@ func (w *WaitGroup) Done() {
 	s.notifyWaiters()
 }
 
-// Finish marks the group as "finished".
-// Subsequent calls to Add will always return false.
-func (w *WaitGroup) Finish() {
-	s := <-w.s
-	defer func() { w.s <- s }()
-
-	s.finished = true
-}
-
 // Wait blocks until the WaitGroup counter is zero.
 func (w *WaitGroup) Wait() {
 	s := <-w.s
+
+	s.finished = true
+
 	if s.counter == 0 {
 		w.s <- s
 		return
